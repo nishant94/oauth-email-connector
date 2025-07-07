@@ -134,8 +134,72 @@ export class EmailService {
         throw new Error("No access token available for Microsoft account");
       }
 
+      if (
+        microsoftConnection.accessTokenExpires &&
+        new Date() >= new Date(microsoftConnection.accessTokenExpires)
+      ) {
+        console.log("🔄 Microsoft token expired, attempting refresh");
+
+        if (!microsoftConnection.refreshToken) {
+          throw new Error(
+            "Microsoft token expired and no refresh token available. Please reconnect your Microsoft account.",
+          );
+        }
+
+        try {
+          const refreshResponse = await axios.post(
+            "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+            {
+              grant_type: "refresh_token",
+              refresh_token: microsoftConnection.refreshToken,
+              client_id: config.MICROSOFT_CLIENT_ID,
+              client_secret: config.MICROSOFT_CLIENT_SECRET,
+            },
+            {
+              headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+              },
+            },
+          );
+
+          const newAccessToken = refreshResponse.data.access_token;
+          const newRefreshToken = refreshResponse.data.refresh_token;
+          const expiresIn = refreshResponse.data.expires_in;
+          const newExpires = new Date(Date.now() + expiresIn * 1000);
+
+          await this.updateUserTokens(
+            user,
+            "microsoft",
+            newAccessToken,
+            newRefreshToken,
+            newExpires,
+          );
+
+          microsoftConnection.accessToken = newAccessToken;
+          console.log("✅ Microsoft token refreshed successfully");
+        } catch (refreshError: any) {
+          console.error("Failed to refresh Microsoft token:", refreshError);
+          throw new Error(
+            "Microsoft authentication expired. Please reconnect your Microsoft account in Settings.",
+          );
+        }
+      }
+
       const message = this.createOutlookMessage(emailData);
 
+      const response = await axios.post(
+        "https://graph.microsoft.com/v1.0/me/sendMail",
+        {
+          message: message,
+          saveToSentItems: true,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${microsoftConnection.accessToken}`,
+            "Content-Type": "application/json",
+          },
+        },
+      );
 
       console.log("Outlook email sent successfully");
 
@@ -435,8 +499,6 @@ export class EmailService {
   async getEmailLimits(
     user: IUser,
   ): Promise<{ dailyLimit: number; currentUsage: number }> {
-
-    // For local users, return a default limit that encompasses both providers
     return { dailyLimit: 800, currentUsage: 0 };
   }
 
